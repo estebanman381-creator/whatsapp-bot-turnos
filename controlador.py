@@ -1,0 +1,139 @@
+from flask import Flask, request
+from twilio.twiml.messaging_response import MessagingResponse
+import sqlite3
+
+app = Flask(__name__)
+
+def conectar_db():
+    conn = sqlite3.connect("turnos_bot.db")
+    cursor = conn.cursor()
+    # Creamos la tabla si no existe
+    cursor.execute("CREATE TABLE IF NOT EXISTS turnos (id INTEGER PRIMARY KEY AUTOINCREMENT, actividad TEXT, fecha TEXT, hora TEXT, cliente_telefono TEXT)")
+    
+    # REVISIÓN: Solo metemos los turnos si la base de datos está completamente vacía
+    cursor.execute("SELECT COUNT(*) FROM turnos")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO turnos (actividad, fecha, hora, cliente_telefono) VALUES ('Psicologo', '2026-06-10', '16:00', NULL)")
+        cursor.execute("INSERT INTO turnos (actividad, fecha, hora, cliente_telefono) VALUES ('Psicologo', '2026-06-11', '17:00', NULL)")
+        cursor.execute("INSERT INTO turnos (actividad, fecha, hora, cliente_telefono) VALUES ('Pediatra', '2026-06-12', '10:00', NULL)")
+        conn.commit()
+        
+    return conn
+
+def obtener_estado_usuario(telefono):
+    conn = conectar_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT estado_actual FROM estados_usuarios WHERE telefono = ?", (telefono,))
+    resultado = cursor.fetchone()
+    conn.close()
+    return resultado[0] if resultado else "INICIO"
+
+def actualizar_estado_usuario(telefono, nuevo_estado):
+    conn = conectar_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO estados_usuarios (telefono, estado_actual) 
+        VALUES (?, ?)
+        ON CONFLICT(telefono) DO UPDATE SET estado_actual = excluded.estado_actual
+    """, (telefono, nuevo_estado))
+    conn.commit()
+    conn.close()
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    mensaje_recibido = request.form.get('Body', '').strip()
+    numero_usuario = request.form.get('From', '')
+    texto_limpio = mensaje_recibido.lower()
+    
+    print(f"\n[Mensaje Inbound] De: {numero_usuario} -> Texto: '{mensaje_recibido}'")
+    
+    respuesta_twilio = MessagingResponse()
+
+    if texto_limpio in ["hola", "buen día", "buenas", "inicio", "reiniciar"]:
+        actualizar_estado_usuario(numero_usuario, "INICIO")
+        reply = (
+            "¡Hola! Bienvenido al sistema de turnos médicos. 🏥\n\n"
+            "¿Para qué especialidad te gustaría agendar un turno?\n"
+            "Escribí una de las opciones:\n"
+            "👉 *Psicologo*\n"
+            "👉 *Pediatra*"
+        )
+        respuesta_twilio.message(reply)
+        return str(respuesta_twilio)
+
+    estado_actual = obtener_estado_usuario(numero_usuario)
+    print(f"[Estado Actual] Usuario en estado: {estado_actual}")
+
+    if estado_actual == "INICIO":
+        if "psico" in texto_limpio or "pediatra" in texto_limpio:
+            actividad_db = "Psicologo" if "psico" in texto_limpio else "Pediatra"
+            
+            conn = conectar_db()
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT id, fecha, hora FROM turnos WHERE actividad LIKE ? AND cliente_telefono IS NULL",
+                (actividad_db,)
+            )
+
+            turnos_libres = cursor.fetchall()
+            conn.close()
+            
+            if turnos_libres:
+                reply = f"Perfecto. Estos son los turnos disponibles para *{actividad_db}*:\n\n"
+                for turno in turnos_libres:
+                    id_turno, fecha, hora = turno
+                    reply += f"🔹 Escribí el número *{id_turno}* para reservar el día {fecha} a las {hora}\n"
+                
+                actualizar_estado_usuario(numero_usuario, "ELIGIO_MEDICO")
+            else:
+                reply = f"Disculpame, por el momento no quedan turnos libres para *{actividad_db}*."
+            
+            respuesta_twilio.message(reply)
+            return str(respuesta_twilio)
+            
+        else:
+            reply = "Por favor, elegí una opción válida escribiendo *Psicologo* o *Pediatra*."
+            respuesta_twilio.message(reply)
+            return str(respuesta_twilio)
+
+    elif estado_actual == "ELIGIO_MEDICO":
+        if mensaje_recibido.isdigit():
+            id_turno_elegido = int(mensaje_recibido)
+            
+            conn = conectar_db()
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT actividad, fecha, hora, cliente_telefono FROM turnos WHERE id = ?", (id_turno_elegido,))
+            turno_data = cursor.fetchone()
+            
+            if turno_data:
+                actividad, fecha, hora, cliente = turno_data
+                if cliente is None:
+                    cursor.execute(
+                        "UPDATE turnos SET cliente_telefono = ? WHERE id = ?", 
+                        (numero_usuario, id_turno_elegido)
+                    )
+                    conn.commit()
+                    
+                    reply = f"¡Turno confirmado! 🎉\n\n📌 *Detalles de tu cita:*\n• Especialidad: {actividad}\n• Fecha: {fecha}\n• Hora: {hora} hs.\n\n¡Te esperamos! Si necesitás otro turno, escribí *Inicio*."
+                    actualizar_estado_usuario(numero_usuario, "INICIO")
+                else:
+                    reply = "Ese turno acaba de ser reservado por otra persona. Por favor, ingresá el número de otro turno que esté libre."
+            else:
+                reply = "El número de turno ingresado no existe. Por favor, mirá la lista de arriba e ingresá un ID válido."
+            
+            conn.close()
+            respuesta_twilio.message(reply)
+            return str(respuesta_twilio)
+        else:
+            reply = "Entrada inválida. Por favor, ingresá solo el *número* del turno que querés reservar (ej: 1)."
+            respuesta_twilio.message(reply)
+            return str(respuesta_twilio)
+
+    return str(respuesta_twilio)
+
+if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

@@ -1,0 +1,44 @@
+import datetime
+import sqlite3
+
+def generar_turnos_automaticos():
+    # Nos conectamos a la base de datos existente
+    conexion = sqlite3.connect("turnos_bot.db")
+    cursor = conexion.cursor()
+    
+    # 1. Limpiamos los turnos viejos que NO estén reservados para no duplicar todo
+    cursor.execute("DELETE FROM turnos WHERE cliente_telefono IS NULL")
+    
+    # 2. Definimos las reglas del negocio
+    especialidades = ["Psicologo", "Pediatra"]
+    horarios = ["09:00", "10:00", "11:00", "15:00", "16:00"]
+    hoy = datetime.date.today()
+    
+    print(f"Fecha de hoy registrada: {hoy}")
+    print("Generando turnos para los próximos 7 días útiles...")
+    
+    # 3. Bucle para calcular los próximos 7 días
+    contador_turnos = 0
+    for i in range(1, 8):
+        fecha_futura = hoy + datetime.timedelta(days=i)
+        
+        # Con .weekday() sabemos qué día es: 5 es Sábado y 6 es Domingo
+        # Si es fin de semana, el código lo saltea automáticamente
+        if fecha_futura.weekday() in [5, 6]:
+            continue 
+            
+        # Cruzamos las especialidades con los horarios para esa fecha
+        for esp in especialidades:
+            for hora in horarios:
+                cursor.execute("""
+                    INSERT INTO turnos (actividad, fecha, hora, cliente_telefono)
+                    VALUES (?, ?, ?, ?)
+                """, (esp, str(fecha_futura), hora, None))
+                contador_turnos += 1
+                
+    conexion.commit()
+    conexion.close()
+    print(f"¡Listo! Se generaron {contador_turnos} turnos automáticos en la base de datos.")
+
+if __name__ == "__main__":
+    generar_turnos_automaticos()
