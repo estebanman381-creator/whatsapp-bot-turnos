@@ -1,41 +1,54 @@
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import sqlite3
+from datetime import datetime
 
 app = Flask(__name__)
 
 def conectar_db():
     conn = sqlite3.connect("turnos_bot.db")
     cursor = conn.cursor()
-    # Creamos la tabla si no existe
-    cursor.execute("CREATE TABLE IF NOT EXISTS turnos (id INTEGER PRIMARY KEY AUTOINCREMENT, actividad TEXT, fecha TEXT, hora TEXT, cliente_telefono TEXT)")
     
-    # REVISIÓN: Solo metemos los turnos si la base de datos está completamente vacía
-    cursor.execute("SELECT COUNT(*) FROM turnos")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO turnos (actividad, fecha, hora, cliente_telefono) VALUES ('Psicologo', '2026-06-10', '16:00', NULL)")
-        cursor.execute("INSERT INTO turnos (actividad, fecha, hora, cliente_telefono) VALUES ('Psicologo', '2026-06-11', '17:00', NULL)")
-        cursor.execute("INSERT INTO turnos (actividad, fecha, hora, cliente_telefono) VALUES ('Pediatra', '2026-06-12', '10:00', NULL)")
-        conn.commit()
-        
+    # Aseguramos que exista la tabla de estados con columnas para recordar la selección
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS estados_usuarios (
+            telefono TEXT PRIMARY KEY,
+            estado_actual TEXT NOT NULL,
+            actividad_elegida INTEGER,
+            nombre_temporal TEXT
+        )
+    ''')
+    conn.commit()
     return conn
 
-def obtener_estado_usuario(telefono):
+def obtener_contexto_usuario(telefono):
     conn = conectar_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT estado_actual FROM estados_usuarios WHERE telefono = ?", (telefono,))
+    cursor.execute("SELECT estado_actual, actividad_elegida, nombre_temporal FROM estados_usuarios WHERE telefono = ?", (telefono,))
     resultado = cursor.fetchone()
     conn.close()
-    return resultado[0] if resultado else "INICIO"
+    if resultado:
+        return resultado[0], resultado[1], resultado[2]
+    return "INICIO", None, None
 
-def actualizar_estado_usuario(telefono, nuevo_estado):
+def actualizar_estado_usuario(telefono, nuevo_estado, actividad_id=None, nombre=None):
     conn = conectar_db()
     cursor = conn.cursor()
+    
+    # Si pasamos None en los datos nuevos, intentamos mantener lo que ya estaba para no borrar la memoria
+    estado_act, act_id_act, nom_act = obtener_contexto_usuario(telefono)
+    
+    final_actividad = actividad_id if actividad_id is not None else act_id_act
+    final_nombre = nombre if nombre is not None else nom_act
+
     cursor.execute("""
-        INSERT INTO estados_usuarios (telefono, estado_actual) 
-        VALUES (?, ?)
-        ON CONFLICT(telefono) DO UPDATE SET estado_actual = excluded.estado_actual
-    """, (telefono, nuevo_estado))
+        INSERT INTO estados_usuarios (telefono, estado_actual, actividad_elegida, nombre_temporal) 
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(telefono) DO UPDATE SET 
+            estado_actual = excluded.estado_actual,
+            actividad_elegida = excluded.actividad_elegida,
+            nombre_temporal = excluded.nombre_temporal
+    """, (telefono, nuevo_estado, final_actividad, final_nombre))
     conn.commit()
     conn.close()
 
@@ -49,87 +62,129 @@ def webhook():
     
     respuesta_twilio = MessagingResponse()
 
+    # Comandos globales de reinicio
     if texto_limpio in ["hola", "buen día", "buenas", "inicio", "reiniciar"]:
-        actualizar_estado_usuario(numero_usuario, "INICIO")
-        reply = (
-            "¡Hola! Bienvenido al sistema de turnos médicos. 🏥\n\n"
-            "¿Para qué especialidad te gustaría agendar un turno?\n"
-            "Escribí una de las opciones:\n"
-            "👉 *Psicologo*\n"
-            "👉 *Pediatra*"
-        )
+        actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, nombre="")
+        
+        # Consultamos las actividades disponibles en la DB
+        conn = conectar_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nombre FROM actividades")
+        actividades = cursor.fetchall()
+        conn.close()
+
+        reply = "¡Hola! Bienvenido al sistema de turnos. 🏥\n\n¿Para qué especialidad te gustaría agendar un turno?\n\n"
+        for act in actividades:
+            reply += f"👉 Escribí *{act[0]}* para *{act[1]}*\n"
+            
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
-    estado_actual = obtener_estado_usuario(numero_usuario)
-    print(f"[Estado Actual] Usuario en estado: {estado_actual}")
+    # Obtenemos el estado y la memoria del usuario
+    estado_actual, actividad_elegida, nombre_temporal = obtener_contexto_usuario(numero_usuario)
+    print(f"[Estado Actual] {estado_actual} | Actividad Guardada ID: {actividad_elegida} | Nombre: {nombre_temporal}")
 
+    # --- ESTADO INICIO: El usuario elige la especialidad ---
     if estado_actual == "INICIO":
-        if "psico" in texto_limpio or "pediatra" in texto_limpio:
-            actividad_db = "Psicologo" if "psico" in texto_limpio else "Pediatra"
+        conn = conectar_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nombre FROM actividades")
+        actividades = {str(act[0]): act[1] for act in cursor.fetchall()}
+        conn.close()
+
+        if mensaje_recibido in actividades:
+            id_actividad = int(mensaje_recibido)
+            nombre_actividad = actividades[mensaje_recibido]
             
+            # Guardamos la actividad elegida y pasamos a pedir el nombre
+            actualizar_estado_usuario(numero_usuario, "ESPERANDO_NOMBRE", actividad_id=id_actividad)
+            
+            reply = f"Perfecto, elegiste *{nombre_actividad}*.\n\nPor favor, ingresá tu **Nombre y Apellido** para registrar en el turno:"
+        else:
+            reply = "Por favor, elegí una opción válida escribiendo solo el número de la especialidad."
+        
+        respuesta_twilio.message(reply)
+        return str(respuesta_twilio)
+
+    # --- ESTADO ESPERANDO_NOMBRE: El usuario ingresa su nombre ---
+    elif estado_actual == "ESPERANDO_NOMBRE":
+        if len(mensaje_recibido) > 2: # Validación simple de que no sea un texto vacío o un solo caracter
+            nombre_usuario = mensaje_recibido
+            
+            # Guardamos el nombre en la memoria intermedia y avanzamos a mostrar horarios
+            actualizar_estado_usuario(numero_usuario, "ELIGIO_HORARIO", nombre=nombre_usuario)
+            
+            # Buscamos los horarios configurados para ESTA actividad
             conn = conectar_db()
             cursor = conn.cursor()
-            
-            cursor.execute(
-                "SELECT id, fecha, hora FROM turnos WHERE actividad LIKE ? AND cliente_telefono IS NULL",
-                (actividad_db,)
-            )
-
-            turnos_libres = cursor.fetchall()
+            cursor.execute("SELECT id, dia_semana, hora FROM horarios_config WHERE actividad_id = ?", (actividad_elegida,))
+            horarios_configurados = cursor.fetchall()
             conn.close()
             
-            if turnos_libres:
-                reply = f"Perfecto. Estos son los turnos disponibles para *{actividad_db}*:\n\n"
-                for turno in turnos_libres:
-                    id_turno, fecha, hora = turno
-                    reply += f"🔹 Escribí el número *{id_turno}* para reservar el día {fecha} a las {hora}\n"
-                
-                actualizar_estado_usuario(numero_usuario, "ELIGIO_MEDICO")
+            if horarios_configurados:
+                reply = f"Muchas gracias {nombre_usuario}. Estos son los turnos disponibles para la especialidad seleccionada:\n\n"
+                for hor in horarios_configurados:
+                    id_horario, dia, hora = hor
+                    reply += f"🔹 Escribí el número *{id_horario}* para el día *{dia}* a las *{hora} hs.*\n"
             else:
-                reply = f"Disculpame, por el momento no quedan turnos libres para *{actividad_db}*."
-            
-            respuesta_twilio.message(reply)
-            return str(respuesta_twilio)
-            
+                reply = "Disculpame, por el momento no hay horarios configurados para esta especialidad. Escribí *Inicio* para volver a empezar."
+                actualizar_estado_usuario(numero_usuario, "INICIO")
         else:
-            reply = "Por favor, elegí una opción válida escribiendo *Psicologo* o *Pediatra*."
-            respuesta_twilio.message(reply)
-            return str(respuesta_twilio)
+            reply = "Por favor, ingresá un nombre y apellido válido."
+            
+        respuesta_twilio.message(reply)
+        return str(respuesta_twilio)
 
-    elif estado_actual == "ELIGIO_MEDICO":
+    # --- ESTADO ELIGIO_HORARIO: El usuario selecciona el turno final ---
+    elif estado_actual == "ELIGIO_HORARIO":
         if mensaje_recibido.isdigit():
-            id_turno_elegido = int(mensaje_recibido)
+            id_horario_elegido = int(mensaje_recibido)
             
             conn = conectar_db()
             cursor = conn.cursor()
             
-            cursor.execute("SELECT actividad, fecha, hora, cliente_telefono FROM turnos WHERE id = ?", (id_turno_elegido,))
-            turno_data = cursor.fetchone()
+            # Verificamos que el ID de horario corresponda a la actividad
+            cursor.execute("""
+                SELECT hc.dia_semana, hc.hora, a.nombre 
+                FROM horarios_config hc 
+                JOIN actividades a ON hc.actividad_id = a.id 
+                WHERE hc.id = ? AND hc.actividad_id = ?
+            """, (id_horario_elegido, actividad_elegida))
             
-            if turno_data:
-                actividad, fecha, hora, cliente = turno_data
-                if cliente is None:
-                    cursor.execute(
-                        "UPDATE turnos SET cliente_telefono = ? WHERE id = ?", 
-                        (numero_usuario, id_turno_elegido)
-                    )
-                    conn.commit()
-                    
-                    reply = f"¡Turno confirmado! 🎉\n\n📌 *Detalles de tu cita:*\n• Especialidad: {actividad}\n• Fecha: {fecha}\n• Hora: {hora} hs.\n\n¡Te esperamos! Si necesitás otro turno, escribí *Inicio*."
-                    actualizar_estado_usuario(numero_usuario, "INICIO")
-                else:
-                    reply = "Ese turno acaba de ser reservado por otra persona. Por favor, ingresá el número de otro turno que esté libre."
+            horario_data = cursor.fetchone()
+            
+            if horario_data:
+                dia_semana, hora, nombre_actividad = horario_data
+                fecha_actual = datetime.now().strftime("%Y-%m-%d") # Fecha de registro
+                
+                # Insertamos la reserva formal en la tabla turnos_reservados
+                cursor.execute("""
+                    INSERT INTO turnos_reservados (cliente_nombre, cliente_telefono, actividad_id, dia_semana, hora, fecha_reserva)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (nombre_temporal, numero_usuario, actividad_elegida, dia_semana, hora, fecha_actual))
+                
+                conn.commit()
+                conn.close()
+                
+                reply = (
+                    f"¡Turno confirmado con éxito! 🎉\n\n"
+                    f"📌 *Detalles del Turno:*\n"
+                    f"• Paciente: {nombre_temporal}\n"
+                    f"• Especialidad: {nombre_actividad}\n"
+                    f"• Día: {dia_semana}\n"
+                    f"• Hora: {hora} hs.\n\n"
+                    f"¡Muchas gracias! Si necesitás gestionar otro turno, escribí *Inicio*."
+                )
+                # Reseteamos el estado del usuario al finalizar con éxito
+                actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, nombre="")
             else:
-                reply = "El número de turno ingresado no existe. Por favor, mirá la lista de arriba e ingresá un ID válido."
-            
-            conn.close()
-            respuesta_twilio.message(reply)
-            return str(respuesta_twilio)
+                conn.close()
+                reply = "El número de opción que ingresaste no corresponde a los turnos disponibles. Por favor, revisá la lista de arriba."
         else:
-            reply = "Entrada inválida. Por favor, ingresá solo el *número* del turno que querés reservar (ej: 1)."
-            respuesta_twilio.message(reply)
-            return str(respuesta_twilio)
+            reply = "Entrada inválida. Por favor, ingresá solo el *número* del turno que querés reservar."
+            
+        respuesta_twilio.message(reply)
+        return str(respuesta_twilio)
 
     return str(respuesta_twilio)
 
