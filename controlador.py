@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, render_template
 from twilio.twiml.messaging_response import MessagingResponse
 import sqlite3
 from datetime import datetime
@@ -187,7 +187,24 @@ def webhook():
         return str(respuesta_twilio)
 
     return str(respuesta_twilio)
-
+@app.route("/panel", methods=["GET"])
+def ver_panel():
+    conn = conectar_db()
+    cursor = conn.cursor()
+    
+    # Hacemos una consulta cruzada (JOIN) para traer el nombre real de la actividad en lugar del ID numérico
+    cursor.execute("""
+        SELECT tr.id, tr.cliente_nombre, tr.cliente_telefono, a.nombre, tr.dia_semana, tr.hora, tr.fecha_reserva
+        FROM turnos_reservados tr
+        JOIN actividades a ON tr.actividad_id = a.id
+        ORDER BY tr.id DESC
+    """)
+    
+    todos_los_turnos = cursor.fetchall()
+    conn.close()
+    
+    # Le pasamos los datos al archivo HTML para que los dibuje en la pantalla
+    return render_template("panel.html", turnos=todos_los_turnos)
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5000))

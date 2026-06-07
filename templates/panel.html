@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel de Turnos - Gestión Médica</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        body {
+            background-color: #f4f7f6;
+            color: #333;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        header {
+            background-color: #1e3d59;
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        header h1 {
+            font-size: 24px;
+        }
+        header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+        h2 {
+            margin-bottom: 15px;
+            color: #1e3d59;
+            font-size: 18px;
+            border-left: 4px solid #17b978;
+            padding-left: 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        th {
+            background-color: #f8f9fa;
+            color: #555;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 0.5px;
+        }
+        tr:hover {
+            background-color: #f1f5f9;
+        }
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .badge-psico {
+            background-color: #e3faf2;
+            color: #17b978;
+        }
+        .badge-pedia {
+            background-color: #e8f4fd;
+            color: #1e88e5;
+        }
+        .telefono {
+            font-family: monospace;
+            color: #666;
+        }
+        .sin-turnos {
+            text-align: center;
+            padding: 4px 0;
+            color: #888;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>Control de Turnos Reservados</h1>
+                <p>Visualización en tiempo real de las citas agendadas por WhatsApp</p>
+            </div>
+            <div style="text-align: right;">
+                <p><strong>Estado del Bot:</strong> En línea 🟢</p>
+            </div>
+        </header>
+
+        <div class="card">
+            <h2>Próximas Citas Registradas</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Paciente</th>
+                        <th>WhatsApp</th>
+                        <th>Especialidad</th>
+                        <th>Día Configurado</th>
+                        <th>Hora</th>
+                        <th>Fecha de Reserva</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for turno in turnos %}
+                    <tr>
+                        <td>{{ turno[0] }}</td>
+                        <td><strong>{{ turno[1] }}</strong></td>
+                        <td class="telefono">{{ turno[2] }}</td>
+                        <td>
+                            {% if "Psic" in turno[3] %}
+                                <span class="badge badge-psico">{{ turno[3] }}</span>
+                            {% else %}
+                                <span class="badge badge-pedia">{{ turno[3] }}</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ turno[4] }}</td>
+                        <td><strong>{{ turno[5] }} hs.</strong></td>
+                        <td style="color: #999; font-size: 13px;">{{ turno[6] }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="sin-turnos">No hay turnos reservados en el sistema todavía.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
