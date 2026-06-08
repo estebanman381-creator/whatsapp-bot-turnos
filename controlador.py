@@ -12,53 +12,6 @@ app.config['BASIC_AUTH_FORCE'] = False              # No forzar a todo el sitio 
 
 basic_auth = BasicAuth(app)
 
-def conectar_db():
-    conn = sqlite3.connect("turnos_bot.db")
-    cursor = conn.cursor()
-    
-    # Aseguramos que exista la tabla de estados con columnas para recordar la selección
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS estados_usuarios (
-            telefono TEXT PRIMARY KEY,
-            estado_actual TEXT NOT NULL,
-            actividad_elegida INTEGER,
-            nombre_temporal TEXT
-        )
-    ''')
-    conn.commit()
-    return conn
-
-def obtener_contexto_usuario(telefono):
-    conn = conectar_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT estado_actual, actividad_elegida, nombre_temporal FROM estados_usuarios WHERE telefono = ?", (telefono,))
-    resultado = cursor.fetchone()
-    conn.close()
-    if resultado:
-        return resultado[0], resultado[1], resultado[2]
-    return "INICIO", None, None
-
-def actualizar_estado_usuario(telefono, nuevo_estado, actividad_id=None, nombre=None):
-    conn = conectar_db()
-    cursor = conn.cursor()
-    
-    # Si pasamos None en los datos nuevos, intentamos mantener lo que ya estaba para no borrar la memoria
-    estado_act, act_id_act, nom_act = obtener_contexto_usuario(telefono)
-    
-    final_actividad = actividad_id if actividad_id is not None else act_id_act
-    final_nombre = nombre if nombre is not None else nom_act
-
-    cursor.execute("""
-        INSERT INTO estados_usuarios (telefono, estado_actual, actividad_elegida, nombre_temporal) 
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(telefono) DO UPDATE SET 
-            estado_actual = excluded.estado_actual,
-            actividad_elegida = excluded.actividad_elegida,
-            nombre_temporal = excluded.nombre_temporal
-    """, (telefono, nuevo_estado, final_actividad, final_nombre))
-    conn.commit()
-    conn.close()
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
     mensaje_recibido = request.form.get('Body', '').strip()
@@ -69,21 +22,16 @@ def webhook():
     
     respuesta_twilio = MessagingResponse()
 
-    # Comandos globales de reinicio
-    if texto_limpio in ["hola", "buen día", "buenas", "inicio", "reiniciar"]:
+    # Comandos globales de reinicio o saludo inicial
+    if texto_limpio in ["hola", "buen día", "buenas", "inicio", "reiniciar", "menú", "menu"]:
         actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, nombre="")
         
-        # Consultamos las actividades disponibles en la DB
-        conn = conectar_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, nombre FROM actividades")
-        actividades = cursor.fetchall()
-        conn.close()
-
-        reply = "¡Hola! Bienvenido al sistema de turnos. 🏥\n\n¿Para qué especialidad te gustaría agendar un turno?\n\n"
-        for act in actividades:
-            reply += f"👉 Escribí *{act[0]}* para *{act[1]}*\n"
-            
+        reply = (
+            "¡Hola! Bienvenido al sistema de turnos médicos. 🏥\n\n"
+            "¿Qué te gustaría hacer hoy?\n\n"
+            "Escribí *1* 👉 Sacar un turno nuevo\n"
+            "Escribí *2* 👉 Cancelar un turno existente"
+        )
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
@@ -91,8 +39,52 @@ def webhook():
     estado_actual, actividad_elegida, nombre_temporal = obtener_contexto_usuario(numero_usuario)
     print(f"[Estado Actual] {estado_actual} | Actividad Guardada ID: {actividad_elegida} | Nombre: {nombre_temporal}")
 
-    # --- ESTADO INICIO: El usuario elige la especialidad ---
+    # --- ESTADO INICIO: El usuario elige entre Sacar o Cancelar ---
     if estado_actual == "INICIO":
+        if mensaje_recibido == "1":
+            # Cambiamos al estado donde elige la especialidad
+            actualizar_estado_usuario(numero_usuario, "ELIGIENDO_ESPECIALIDAD")
+            
+            conn = conectar_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, nombre FROM actividades")
+            actividades = cursor.fetchall()
+            conn.close()
+
+            reply = "Perfecto. ¿Para qué especialidad te gustaría agendar?\n\n"
+            for act in actividades:
+                reply += f"👉 Escribí *{act[0]}* para *{act[1]}*\n"
+            
+        elif mensaje_recibido == "2":
+            # El usuario quiere cancelar. Buscamos si tiene turnos con su número de teléfono
+            conn = conectar_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT tr.id, a.nombre, tr.dia_semana, tr.hora 
+                FROM turnos_reservados tr
+                JOIN actividades a ON tr.actividad_id = a.id
+                WHERE tr.cliente_telefono = ?
+            """, (numero_usuario,))
+            turnos_usuario = cursor.fetchall()
+            conn.close()
+
+            if turnos_usuario:
+                actualizar_estado_usuario(numero_usuario, "ESPERANDO_CANCELACION")
+                reply = "Estos son tus turnos agendados asociados a este número de WhatsApp:\n\n"
+                for t in turnos_usuario:
+                    reply += f"❌ Escribí el número *{t[0]}* para cancelar el turno de *{t[1]}* el día *{t[2]}* a las *{t[3]} hs.*\n"
+                reply += "\nSi te equivocaste, podés escribir *Inicio* para volver al menú."
+            else:
+                reply = "No encontramos ningún turno activo asociado a tu número de teléfono. Escribí *Inicio* para volver al menú principal."
+                actualizar_estado_usuario(numero_usuario, "INICIO")
+        else:
+            reply = "Por favor, elegí una opción válida escribiendo *1* (Sacar turno) o *2* (Cancelar turno)."
+        
+        respuesta_twilio.message(reply)
+        return str(respuesta_twilio)
+
+    # --- NUEVO SUB-ESTADO: El usuario está eligiendo la especialidad para sacar turno ---
+    elif estado_actual == "ELIGIENDO_ESPECIALIDAD":
         conn = conectar_db()
         cursor = conn.cursor()
         cursor.execute("SELECT id, nombre FROM actividades")
@@ -103,9 +95,7 @@ def webhook():
             id_actividad = int(mensaje_recibido)
             nombre_actividad = actividades[mensaje_recibido]
             
-            # Guardamos la actividad elegida y pasamos a pedir el nombre
             actualizar_estado_usuario(numero_usuario, "ESPERANDO_NOMBRE", actividad_id=id_actividad)
-            
             reply = f"Perfecto, elegiste *{nombre_actividad}*.\n\nPor favor, ingresá tu **Nombre y Apellido** para registrar en el turno:"
         else:
             reply = "Por favor, elegí una opción válida escribiendo solo el número de la especialidad."
@@ -113,15 +103,12 @@ def webhook():
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
-    # --- ESTADO ESPERANDO_NOMBRE: El usuario ingresa su nombre ---
+    # --- ESTADO ESPERANDO_NOMBRE: El usuario ingresa su nombre (Igual que antes) ---
     elif estado_actual == "ESPERANDO_NOMBRE":
-        if len(mensaje_recibido) > 2: # Validación simple de que no sea un texto vacío o un solo caracter
+        if len(mensaje_recibido) > 2:
             nombre_usuario = mensaje_recibido
-            
-            # Guardamos el nombre en la memoria intermedia y avanzamos a mostrar horarios
             actualizar_estado_usuario(numero_usuario, "ELIGIO_HORARIO", nombre=nombre_usuario)
             
-            # Buscamos los horarios configurados para ESTA actividad
             conn = conectar_db()
             cursor = conn.cursor()
             cursor.execute("SELECT id, dia_semana, hora FROM horarios_config WHERE actividad_id = ?", (actividad_elegida,))
@@ -129,12 +116,12 @@ def webhook():
             conn.close()
             
             if horarios_configurados:
-                reply = f"Muchas gracias {nombre_usuario}. Estos son los turnos disponibles para la especialidad seleccionada:\n\n"
+                reply = f"Muchas gracias {nombre_usuario}. Estos son los turnos disponibles:\n\n"
                 for hor in horarios_configurados:
                     id_horario, dia, hora = hor
                     reply += f"🔹 Escribí el número *{id_horario}* para el día *{dia}* a las *{hora} hs.*\n"
             else:
-                reply = "Disculpame, por el momento no hay horarios configurados para esta especialidad. Escribí *Inicio* para volver a empezar."
+                reply = "Disculpame, por el momento no hay horarios configurados. Escribí *Inicio* para volver a empezar."
                 actualizar_estado_usuario(numero_usuario, "INICIO")
         else:
             reply = "Por favor, ingresá un nombre y apellido válido."
@@ -142,53 +129,68 @@ def webhook():
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
-    # --- ESTADO ELIGIO_HORARIO: El usuario selecciona el turno final ---
+    # --- ESTADO ELIGIO_HORARIO: Confirmación final del turno (Igual que antes) ---
     elif estado_actual == "ELIGIO_HORARIO":
         if mensaje_recibido.isdigit():
             id_horario_elegido = int(mensaje_recibido)
             
             conn = conectar_db()
             cursor = conn.cursor()
-            
-            # Verificamos que el ID de horario corresponda a la actividad
             cursor.execute("""
                 SELECT hc.dia_semana, hc.hora, a.nombre 
                 FROM horarios_config hc 
                 JOIN actividades a ON hc.actividad_id = a.id 
                 WHERE hc.id = ? AND hc.actividad_id = ?
             """, (id_horario_elegido, actividad_elegida))
-            
             horario_data = cursor.fetchone()
             
             if horario_data:
                 dia_semana, hora, nombre_actividad = horario_data
-                fecha_actual = datetime.now().strftime("%Y-%m-%d") # Fecha de registro
+                fecha_actual = datetime.now().strftime("%Y-%m-%d")
                 
-                # Insertamos la reserva formal en la tabla turnos_reservados
                 cursor.execute("""
                     INSERT INTO turnos_reservados (cliente_nombre, cliente_telefono, actividad_id, dia_semana, hora, fecha_reserva)
                     VALUES (?, ?, ?, ?, ?, ?)
                 """, (nombre_temporal, numero_usuario, actividad_elegida, dia_semana, hora, fecha_actual))
-                
                 conn.commit()
                 conn.close()
                 
-                reply = (
-                    f"¡Turno confirmado con éxito! 🎉\n\n"
-                    f"📌 *Detalles del Turno:*\n"
-                    f"• Paciente: {nombre_temporal}\n"
-                    f"• Especialidad: {nombre_actividad}\n"
-                    f"• Día: {dia_semana}\n"
-                    f"• Hora: {hora} hs.\n\n"
-                    f"¡Muchas gracias! Si necesitás gestionar otro turno, escribí *Inicio*."
-                )
-                # Reseteamos el estado del usuario al finalizar con éxito
+                reply = f"¡Turno confirmado con éxito! 🎉\n\n📌 *Detalles:*\n• Paciente: {nombre_temporal}\n• {nombre_actividad}\n• Día: {dia_semana}\n• Hora: {hora} hs.\n\nEscribí *Inicio* para volver al menú principal."
                 actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, nombre="")
             else:
                 conn.close()
-                reply = "El número de opción que ingresaste no corresponde a los turnos disponibles. Por favor, revisá la lista de arriba."
+                reply = "El número de opción que ingresaste no corresponde a los turnos disponibles."
         else:
-            reply = "Entrada inválida. Por favor, ingresá solo el *número* del turno que querés reservar."
+            reply = "Por favor, ingresá solo el número del turno."
+            
+        respuesta_twilio.message(reply)
+        return str(respuesta_twilio)
+
+    # --- NUEVO ESTADO: PROCESAR LA CANCELACIÓN ---
+    elif estado_actual == "ESPERANDO_CANCELACION":
+        if mensaje_recibido.isdigit():
+            id_turno_cancelar = int(mensaje_recibido)
+            
+            conn = conectar_db()
+            cursor = conn.cursor()
+            
+            # Verificamos primero que ese ID de turno realmente le pertenezca a este número de teléfono (Seguridad)
+            cursor.execute("SELECT id FROM turnos_reservados WHERE id = ? AND cliente_telefono = ?", (id_turno_cancelar, numero_usuario))
+            existe_turno = cursor.fetchone()
+            
+            if existe_turno:
+                # Borramos el turno de la base de datos
+                cursor.execute("DELETE FROM turnos_reservados WHERE id = ?", (id_turno_cancelar,))
+                conn.commit()
+                conn.close()
+                
+                reply = "¡Tu turno ha sido cancelado con éxito! ❌ El horario ya quedó liberado para otro paciente. Si necesitás algo más, escribí *Inicio*."
+                actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, nombre="")
+            else:
+                conn.close()
+                reply = "El ID ingresado no corresponde a ninguno de tus turnos activos. Por favor, revisá el número de la lista de arriba."
+        else:
+            reply = "Por favor, ingresá solo el número identificador del turno que deseas cancelar."
             
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
