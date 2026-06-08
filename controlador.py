@@ -215,6 +215,52 @@ def ver_panel():
     
     # Le pasamos los datos al archivo HTML para que los dibuje en la pantalla
     return render_template("panel.html", turnos=todos_los_turnos)
+def conectar_db():
+    return sqlite3.connect("turnos_bot.db")
+
+def obtener_contexto_usuario(telefono):
+    conn = conectar_db()
+    cursor = conn.cursor()
+    # Creamos la tabla de estados si no existe por las dudas
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS estados_usuario (
+            telefono TEXT PRIMARY KEY,
+            estado TEXT,
+            actividad_id INTEGER,
+            nombre_temporal TEXT
+        )
+    """)
+    cursor.execute("SELECT estado, actividad_id, nombre_temporal FROM estados_usuario WHERE telefono = ?", (telefono,))
+    resultado = cursor.fetchone()
+    conn.close()
+    
+    if resultado:
+        return resultado[0], resultado[1], resultado[2]
+    else:
+        return "INICIO", 0, ""
+
+def actualizar_estado_usuario(telefono, nuevo_estado, actividad_id=None, nombre=None):
+    conn = conectar_db()
+    cursor = conn.cursor()
+    
+    # Buscamos si ya existe el usuario para mantener los datos antiguos si vienen en None
+    cursor.execute("SELECT actividad_id, nombre_temporal FROM estados_usuario WHERE telefono = ?", (telefono,))
+    existente = cursor.fetchone()
+    
+    act_id = actividad_id if actividad_id is not None else (existente[0] if existente else 0)
+    nom_temp = nombre if nombre is not None else (existente[1] if existente else "")
+    
+    cursor.execute("""
+        INSERT INTO estados_usuario (telefono, estado, actividad_id, nombre_temporal)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(telefono) DO UPDATE SET
+            estado = excluded.estado,
+            actividad_id = excluded.actividad_id,
+            nombre_temporal = excluded.nombre_temporal
+    """, (telefono, nuevo_estado, act_id, nom_temp))
+    
+    conn.commit()
+    conn.close()
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5000))
