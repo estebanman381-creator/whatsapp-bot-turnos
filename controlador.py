@@ -243,7 +243,17 @@ def actualizar_estado_usuario(telefono, nuevo_estado, actividad_id=None, nombre=
     conn = conectar_db()
     cursor = conn.cursor()
     
-    # Buscamos si ya existe el usuario para mantener los datos antiguos si vienen en None
+    # PARCHE: Crear la tabla por si no existe antes de hacer el SELECT
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS estados_usuario (
+            telefono TEXT PRIMARY KEY,
+            estado TEXT,
+            actividad_id INTEGER,
+            nombre_temporal TEXT
+        )
+    """)
+    
+    # Ahora sí buscamos si ya existe el usuario
     cursor.execute("SELECT actividad_id, nombre_temporal FROM estados_usuario WHERE telefono = ?", (telefono,))
     existente = cursor.fetchone()
     
