@@ -2,8 +2,15 @@ from flask import Flask, request, render_template
 from twilio.twiml.messaging_response import MessagingResponse
 import sqlite3
 from datetime import datetime
+from flask_basicauth import BasicAuth
 
 app = Flask(__name__)
+# Configuración de seguridad para el Panel Web
+app.config['BASIC_AUTH_USERNAME'] = 'cic'       # Tu usuario para entrar
+app.config['BASIC_AUTH_PASSWORD'] = 'medicos2026'   # Tu contraseña secreta
+app.config['BASIC_AUTH_FORCE'] = False              # No forzar a todo el sitio (solo al panel)
+
+basic_auth = BasicAuth(app)
 
 def conectar_db():
     conn = sqlite3.connect("turnos_bot.db")
@@ -188,6 +195,7 @@ def webhook():
 
     return str(respuesta_twilio)
 @app.route("/panel", methods=["GET"])
+@basic_auth.required
 def ver_panel():
     conn = conectar_db()
     cursor = conn.cursor()
