@@ -180,8 +180,9 @@ def webhook():
                 conn.commit()
                 conn.close()
                 
-                reply = f"¡Turno confirmado con éxito! 🎉\n\n📌 *Detalles:*\n• Paciente: {nombre_temporal}\n• {nombre_actividad}\n• Día: {dia_semana}\n• Hora: {hora} hs.\n\nEscribí *Inicio* para volver al menú principal."
-                actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, name="")
+                # CORRECCIÓN AQUÍ: Usamos nombre_temporal que es el que tiene el nombre real guardado
+                reply = f"¡Turno confirmado con éxito! 🎉\n\n📌 *Detalles:*\n• Paciente: {nombre_temporal}\n• Especialidad: {nombre_actividad}\n• Día: {dia_semana}\n• Hora: {hora} hs.\n\nEscribí *Inicio* para volver al menú principal."
+                actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, nombre="")
             else:
                 conn.close()
                 reply = "El número de opción que ingresaste no corresponde a los turnos disponibles."
