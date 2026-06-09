@@ -1,7 +1,7 @@
 from flask import Flask, request, render_template
 from twilio.twiml.messaging_response import MessagingResponse
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask_basicauth import BasicAuth
 import re
 
@@ -13,23 +13,35 @@ app.config['BASIC_AUTH_FORCE'] = False              # No forzar a todo el sitio 
 
 basic_auth = BasicAuth(app)
 
-def es_nombre_valido(nombre):
-    # Quitamos espacios de los costados
-    nombre = nombre.strip()
+# Diccionario para mapear los nombres de los días al número de la semana de Python (0=Lunes, 6=Domingo)
+DIAS_MAPA = {
+    "lunes": 0, "martes": 1, "miercoles": 2, "miércoles": 2,
+    "jueves": 3, "viernes": 4, "sabado": 5, "sábado": 5, "domingo": 6
+}
+
+def calcular_proxima_fecha(dia_semana_str):
+    """Calcula la fecha exacta (YYYY-MM-DD) del próximo día de la semana indicado"""
+    hoy = datetime.now()
+    dia_objetivo = DIAS_MAPA.get(dia_semana_str.lower().strip())
     
-    # Regla 1: Que tenga al menos 3 caracteres
-    if len(nombre) < 3:
-        return False
+    if dia_objetivo is None:
+        return hoy.strftime("%Y-%m-%d")
         
-    # Regla 2: Que tenga un máximo razonable (ej. 50 caracteres)
-    if len(nombre) > 50:
-        return False
+    dias_de_diferencia = dia_objetivo - hoy.weekday()
+    # Si el día ya pasó esta semana o es hoy, agendamos para la semana siguiente
+    if dias_de_diferencia <= 0:
+        dias_de_diferencia += 7
         
-    # Regla 3: Que solo contenga letras, espacios y acentos (no números ni símbolos raros)
+    fecha_destino = hoy + timedelta(days=dias_de_diferencia)
+    return fecha_destino.strftime("%Y-%m-%d")
+
+def es_nombre_valido(nombre):
+    nombre = nombre.strip()
+    if len(nombre) < 3 or len(nombre) > 50:
+        return False
     patron = r"^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]+$"
     if not re.match(patron, nombre):
         return False
-        
     return True
 
 @app.route("/webhook", methods=["POST"])
@@ -42,7 +54,6 @@ def webhook():
     
     respuesta_twilio = MessagingResponse()
 
-    # Comandos globales de reinicio o saludo inicial
     if texto_limpio in ["hola", "buen día", "buenas", "inicio", "reiniciar", "menú", "menu"]:
         actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, nombre="")
         
@@ -55,14 +66,11 @@ def webhook():
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
-    # Obtenemos el estado y la memoria del usuario
     estado_actual, actividad_elegida, nombre_temporal = obtener_contexto_usuario(numero_usuario)
     print(f"[Estado Actual] {estado_actual} | Actividad Guardada ID: {actividad_elegida} | Nombre: {nombre_temporal}")
 
-    # --- ESTADO INICIO: El usuario elige entre Sacar o Cancelar ---
     if estado_actual == "INICIO":
         if mensaje_recibido == "1":
-            # Cambiamos al estado donde elige la especialidad
             actualizar_estado_usuario(numero_usuario, "ELIGIENDO_ESPECIALIDAD")
             
             conn = conectar_db()
@@ -76,11 +84,10 @@ def webhook():
                 reply += f"👉 Escribí *{act[0]}* para *{act[1]}*\n"
             
         elif mensaje_recibido == "2":
-            # El usuario quiere cancelar. Buscamos si tiene turnos con su número de teléfono
             conn = conectar_db()
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT tr.id, a.nombre, tr.dia_semana, tr.hora 
+                SELECT tr.id, a.nombre, tr.dia_semana, tr.fecha_reserva, tr.hora 
                 FROM turnos_reservados tr
                 JOIN actividades a ON tr.actividad_id = a.id
                 WHERE tr.cliente_telefono = ?
@@ -92,7 +99,10 @@ def webhook():
                 actualizar_estado_usuario(numero_usuario, "ESPERANDO_CANCELACION")
                 reply = "Estos son tus turnos agendados asociados a este número de WhatsApp:\n\n"
                 for t in turnos_usuario:
-                    reply += f"❌ Escribí el número *{t[0]}* para cancelar el turno de *{t[1]}* el día *{t[2]}* a las *{t[3]} hs.*\n"
+                    # Formateamos la fecha de YYYY-MM-DD a DD/MM para el mensaje de cancelación
+                    fecha_dt = datetime.strptime(t[3], "%Y-%m-%d")
+                    fecha_formateada = fecha_dt.strftime("%d/%m")
+                    reply += f"❌ Escribí el número *{t[0]}* para cancelar el turno de *{t[1]}* el día *{t[2]} {fecha_formateada}* a las *{t[4]} hs.*\n"
                 reply += "\nSi te equivocaste, podés escribir *Inicio* para volver al menú."
             else:
                 reply = "No encontramos ningún turno activo asociado a tu número de teléfono. Escribí *Inicio* para volver al menú principal."
@@ -103,7 +113,6 @@ def webhook():
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
-    # --- NUEVO SUB-ESTADO: El usuario está eligiendo la especialidad para sacar turno ---
     elif estado_actual == "ELIGIENDO_ESPECIALIDAD":
         conn = conectar_db()
         cursor = conn.cursor()
@@ -123,17 +132,14 @@ def webhook():
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
-    # --- NUEVO FILTRO INTELIGENTE: Validar el formato del nombre ---
     elif estado_actual == "ESPERANDO_NOMBRE":
         nombre_usuario = mensaje_recibido.strip()
         
-        # Validamos si el nombre cumple con las reglas (letras y longitud)
         if not es_nombre_valido(nombre_usuario):
             reply = "Por favor, ingresá un nombre y apellido válido (solo letras, sin números ni símbolos) para poder registrar tu turno."
             respuesta_twilio.message(reply)
             return str(respuesta_twilio)
             
-        # Si el nombre es correcto, continúa guardando el estado
         actualizar_estado_usuario(numero_usuario, "ELIGIO_HORARIO", nombre=nombre_usuario)
         
         conn = conectar_db()
@@ -146,15 +152,19 @@ def webhook():
             reply = f"Muchas gracias {nombre_usuario}. Estos son los turnos disponibles:\n\n"
             for hor in horarios_configurados:
                 id_horario, dia, hora = hor
-                reply += f"🔹 Escribí el número *{id_horario}* para el día *{dia}* a las *{hora} hs.*\n"
+                # Calculamos dinámicamente la fecha (DD/MM) para mostrársela al usuario
+                fecha_calculada_str = calcular_proxima_fecha(dia)
+                fecha_dt = datetime.strptime(fecha_calculada_str, "%Y-%m-%d")
+                fecha_formateada = fecha_dt.strftime("%d/%m")
+                
+                reply += f"🔹 Escribí el número *{id_horario}* para el día *{dia} {fecha_formateada}* a las *{hora} hs.*\n"
         else:
             reply = "Disculpame, por el momento no hay horarios configurados. Escribí *Inicio* para volver a empezar."
-            actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, nombre="")
+            actualizar_estado_usuario(numero_usuario, "INICIO")
             
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
-    # --- ESTADO ELIGIO_HORARIO: Confirmación final del turno ---
     elif estado_actual == "ELIGIO_HORARIO":
         if mensaje_recibido.isdigit():
             id_horario_elegido = int(mensaje_recibido)
@@ -171,17 +181,20 @@ def webhook():
             
             if horario_data:
                 dia_semana, hora, nombre_actividad = horario_data
-                fecha_actual = datetime.now().strftime("%Y-%m-%d")
+                
+                # Calculamos la fecha exacta del turno para guardarla de forma precisa en la DB
+                fecha_turno = calcular_proxima_fecha(dia_semana)
+                fecha_dt = datetime.strptime(fecha_turno, "%Y-%m-%d")
+                fecha_formateada = fecha_dt.strftime("%d/%m/%y")
                 
                 cursor.execute("""
                     INSERT INTO turnos_reservados (cliente_nombre, cliente_telefono, actividad_id, dia_semana, hora, fecha_reserva)
                     VALUES (?, ?, ?, ?, ?, ?)
-                """, (nombre_temporal, numero_usuario, actividad_elegida, dia_semana, hora, fecha_actual))
+                """, (nombre_temporal, numero_usuario, actividad_elegida, dia_semana, hora, fecha_turno))
                 conn.commit()
                 conn.close()
                 
-                # CORRECCIÓN AQUÍ: Usamos nombre_temporal que es el que tiene el nombre real guardado
-                reply = f"¡Turno confirmado con éxito! 🎉\n\n📌 *Detalles:*\n• Paciente: {nombre_temporal}\n• Especialidad: {nombre_actividad}\n• Día: {dia_semana}\n• Hora: {hora} hs.\n\nEscribí *Inicio* para volver al menú principal."
+                reply = f"¡Turno confirmado con éxito! 🎉\n\n📌 *Detalles:*\n• Paciente: {nombre_temporal}\n• Especialidad: {nombre_actividad}\n• Día: {dia_semana} {fecha_formateada}\n• Hora: {hora} hs.\n\nEscribí *Inicio* para volver al menú principal."
                 actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, nombre="")
             else:
                 conn.close()
@@ -192,20 +205,16 @@ def webhook():
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
-    # --- ESTADO: PROCESAR LA CANCELACIÓN ---
     elif estado_actual == "ESPERANDO_CANCELACION":
         if mensaje_recibido.isdigit():
             id_turno_cancelar = int(mensaje_recibido)
             
             conn = conectar_db()
             cursor = conn.cursor()
-            
-            # Verificamos primero que ese ID de turno realmente le pertenezca a este número de teléfono
             cursor.execute("SELECT id FROM turnos_reservados WHERE id = ? AND cliente_telefono = ?", (id_turno_cancelar, numero_usuario))
             existe_turno = cursor.fetchone()
             
             if existe_turno:
-                # Borramos el turno de la base de datos
                 cursor.execute("DELETE FROM turnos_reservados WHERE id = ?", (id_turno_cancelar,))
                 conn.commit()
                 conn.close()
@@ -228,11 +237,8 @@ def webhook():
 def ver_panel():
     conn = conectar_db()
     cursor = conn.cursor()
-    
-    # Obtenemos la fecha de hoy en formato AAAA-MM-DD
     hoy = datetime.now().strftime("%Y-%m-%d")
     
-    # Filtramos para traer solo turnos de hoy o del futuro (fecha_reserva >= hoy)
     cursor.execute("""
         SELECT tr.id, tr.cliente_nombre, tr.cliente_telefono, a.nombre, tr.dia_semana, tr.hora, tr.fecha_reserva
         FROM turnos_reservados tr
@@ -244,7 +250,24 @@ def ver_panel():
     todos_los_turnos = cursor.fetchall()
     conn.close()
     
-    return render_template("panel.html", turnos=todos_los_turnos)
+    # Procesamos los turnos para cambiar el formato de fecha de 'YYYY-MM-DD' a 'DD/MM' antes de mandarlo al HTML
+    turnos_procesados = []
+    for t in todos_los_turnos:
+        fecha_dt = datetime.strptime(t[6], "%Y-%m-%d")
+        fecha_corta = fecha_dt.strftime("%d/%m/%y")
+        
+        turno_dict = {
+            "id": t[0],
+            "cliente_nombre": t[1],
+            "cliente_telefono": t[2],
+            "actividad_nombre": t[3],
+            "dia_semana": t[4],
+            "hora": t[5],
+            "fecha": fecha_corta
+        }
+        turnos_procesados.append(turno_dict)
+    
+    return render_template("panel.html", turnos=turnos_procesados)
 
 def conectar_db():
     return sqlite3.connect("turnos_bot.db")
@@ -272,7 +295,6 @@ def obtener_contexto_usuario(telefono):
 def actualizar_estado_usuario(telefono, nuevo_estado, actividad_id=None, nombre=None):
     conn = conectar_db()
     cursor = conn.cursor()
-    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS estados_usuario (
             telefono TEXT PRIMARY KEY,
@@ -281,7 +303,6 @@ def actualizar_estado_usuario(telefono, nuevo_estado, actividad_id=None, nombre=
             nombre_temporal TEXT
         )
     """)
-    
     cursor.execute("SELECT actividad_id, nombre_temporal FROM estados_usuario WHERE telefono = ?", (telefono,))
     existente = cursor.fetchone()
     
