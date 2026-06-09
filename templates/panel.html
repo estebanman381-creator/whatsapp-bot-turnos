@@ -119,32 +119,33 @@
                         <th>PACIENTE</th>
                         <th>WHATSAPP</th>
                         <th>ESPECIALIDAD</th>
-                        <th>DÍA Y FECHA</th> <!-- Juntamos acá -->
+                        <th>DÍA Y FECHA</th>
                         <th>HORA</th>
-                 </tr>
+                    </tr>
                 </thead>
                 <tbody>
-            {% for turno in turnos %}
-            <tr>
-                <td>{{ turno.id }}</td>
-                <td><strong>{{ turno.cliente_nombre }}</strong></td>
-                <td class="telefono">{{ turno.cliente_telefono }}</td>
-                <td>
-                    {% if "Psic" in turno.actividad_nombre %}
-                        <span class="badge badge-psico">{{ turno.actividad_nombre }}</span>
+                    {% for turno in turnos %}
+                    <tr>
+                        <td>{{ turno.id }}</td>
+                        <td><strong>{{ turno.cliente_nombre }}</strong></td>
+                        <td class="telefono">{{ turno.cliente_telefono }}</td>
+                        <td>
+                            {% if "Psic" in turno.actividad_nombre %}
+                                <span class="badge badge-psico">{{ turno.actividad_nombre }}</span>
+                            {% else %}
+                                <span class="badge badge-pedia">{{ turno.actividad_nombre }}</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ turno.dia_semana }} {{ turno.fecha }}</td>
+                        <td><strong>{{ turno.hora }} hs.</strong></td>
+                    </tr>
+                    {% endfor %}
                     {% else %}
-                        <span class="badge badge-pedia">{{ turno.actividad_nombre }}</span>
+                    <tr>
+                        <td colspan="6" class="sin-turnos">No hay turnos reservados en el sistema todavía.</td>
+                    </tr>
                     {% endif %}
-                </td>
-                <td>{{ turno.dia_semana }} {{ turno.fecha }}</td>
-                <td><strong>{{ turno.hora }} hs.</strong></td>
-            </tr>
-            {% else %}
-            <tr>
-                <td colspan="6" class="sin-turnos">No hay turnos reservados en el sistema todavía.</td>
-            </tr>
-            {% endfor %}
-        </tbody>
+                </tbody>
             </table>
         </div>
     </div>
