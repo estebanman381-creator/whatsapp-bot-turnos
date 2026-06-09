@@ -149,7 +149,7 @@ def webhook():
                 reply += f"🔹 Escribí el número *{id_horario}* para el día *{dia}* a las *{hora} hs.*\n"
         else:
             reply = "Disculpame, por el momento no hay horarios configurados. Escribí *Inicio* para volver a empezar."
-            actualizar_estado_usuario(numero_usuario, "INICIO")
+            actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, nombre="")
             
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
