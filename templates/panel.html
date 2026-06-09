@@ -116,36 +116,35 @@
                 <thead>
                     <tr>
                         <th>ID</th>
-                        <th>Paciente</th>
-                        <th>WhatsApp</th>
-                        <th>Especialidad</th>
-                        <th>Día Configurado</th>
-                        <th>Hora</th>
-                        <th>Fecha de Reserva</th>
-                    </tr>
+                        <th>PACIENTE</th>
+                        <th>WHATSAPP</th>
+                        <th>ESPECIALIDAD</th>
+                        <th>DÍA Y FECHA</th> <!-- Juntamos acá -->
+                        <th>HORA</th>
+                 </tr>
                 </thead>
                 <tbody>
-                    {% for turno in turnos %}
-                    <tr>
-                        <td>{{ turno.id }}</td>
-            <td><strong>{{ turno.cliente_nombre }}</strong></td>
-            <td class="telefono">{{ turno.cliente_telefono }}</td>
-            <td>
-                {% if "Psic" in turno.actividad_nombre %}
-                    <span class="badge badge-psico">{{ turno.actividad_nombre }}</span>
-                {% else %}
-                    <span class="badge badge-pedia">{{ turno.actividad_nombre }}</span>
-                {% endif %}
-            </td>
-            <td>{{ turno.dia_semana }} {{ turno.fecha }}</td>
-            <td><strong>{{ turno.hora }} hs.</strong></td>
-                    </tr>
+            {% for turno in turnos %}
+            <tr>
+                <td>{{ turno.id }}</td>
+                <td><strong>{{ turno.cliente_nombre }}</strong></td>
+                <td class="telefono">{{ turno.cliente_telefono }}</td>
+                <td>
+                    {% if "Psic" in turno.actividad_nombre %}
+                        <span class="badge badge-psico">{{ turno.actividad_nombre }}</span>
                     {% else %}
-                    <tr>
-                        <td colspan="7" class="sin-turnos">No hay turnos reservados en el sistema todavía.</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
+                        <span class="badge badge-pedia">{{ turno.actividad_nombre }}</span>
+                    {% endif %}
+                </td>
+                <td>{{ turno.dia_semana }} {{ turno.fecha }}</td>
+                <td><strong>{{ turno.hora }} hs.</strong></td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="6" class="sin-turnos">No hay turnos reservados en el sistema todavía.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
             </table>
         </div>
     </div>
