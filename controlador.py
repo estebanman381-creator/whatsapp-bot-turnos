@@ -3,6 +3,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 import sqlite3
 from datetime import datetime
 from flask_basicauth import BasicAuth
+import re
 
 app = Flask(__name__)
 # Configuración de seguridad para el Panel Web
@@ -11,6 +12,25 @@ app.config['BASIC_AUTH_PASSWORD'] = 'medicos2026'   # Tu contraseña secreta
 app.config['BASIC_AUTH_FORCE'] = False              # No forzar a todo el sitio (solo al panel)
 
 basic_auth = BasicAuth(app)
+
+def es_nombre_valido(nombre):
+    # Quitamos espacios de los costados
+    nombre = nombre.strip()
+    
+    # Regla 1: Que tenga al menos 3 caracteres
+    if len(nombre) < 3:
+        return False
+        
+    # Regla 2: Que tenga un máximo razonable (ej. 50 caracteres)
+    if len(nombre) > 50:
+        return False
+        
+    # Regla 3: Que solo contenga letras, espacios y acentos (no números ni símbolos raros)
+    patron = r"^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s]+$"
+    if not re.match(patron, nombre):
+        return False
+        
+    return True
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -103,33 +123,38 @@ def webhook():
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
-    # --- ESTADO ESPERANDO_NOMBRE: El usuario ingresa su nombre (Igual que antes) ---
+    # --- NUEVO FILTRO INTELIGENTE: Validar el formato del nombre ---
     elif estado_actual == "ESPERANDO_NOMBRE":
-        if len(mensaje_recibido) > 2:
-            nombre_usuario = mensaje_recibido
-            actualizar_estado_usuario(numero_usuario, "ELIGIO_HORARIO", nombre=nombre_usuario)
+        nombre_usuario = mensaje_recibido.strip()
+        
+        # Validamos si el nombre cumple con las reglas (letras y longitud)
+        if not es_nombre_valido(nombre_usuario):
+            reply = "Por favor, ingresá un nombre y apellido válido (solo letras, sin números ni símbolos) para poder registrar tu turno."
+            respuesta_twilio.message(reply)
+            return str(respuesta_twilio)
             
-            conn = conectar_db()
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, dia_semana, hora FROM horarios_config WHERE actividad_id = ?", (actividad_elegida,))
-            horarios_configurados = cursor.fetchall()
-            conn.close()
-            
-            if horarios_configurados:
-                reply = f"Muchas gracias {nombre_usuario}. Estos son los turnos disponibles:\n\n"
-                for hor in horarios_configurados:
-                    id_horario, dia, hora = hor
-                    reply += f"🔹 Escribí el número *{id_horario}* para el día *{dia}* a las *{hora} hs.*\n"
-            else:
-                reply = "Disculpame, por el momento no hay horarios configurados. Escribí *Inicio* para volver a empezar."
-                actualizar_estado_usuario(numero_usuario, "INICIO")
+        # Si el nombre es correcto, continúa guardando el estado
+        actualizar_estado_usuario(numero_usuario, "ELIGIO_HORARIO", nombre=nombre_usuario)
+        
+        conn = conectar_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, dia_semana, hora FROM horarios_config WHERE actividad_id = ?", (actividad_elegida,))
+        horarios_configurados = cursor.fetchall()
+        conn.close()
+        
+        if horarios_configurados:
+            reply = f"Muchas gracias {nombre_usuario}. Estos son los turnos disponibles:\n\n"
+            for hor in horarios_configurados:
+                id_horario, dia, hora = hor
+                reply += f"🔹 Escribí el número *{id_horario}* para el día *{dia}* a las *{hora} hs.*\n"
         else:
-            reply = "Por favor, ingresá un nombre y apellido válido."
+            reply = "Disculpame, por el momento no hay horarios configurados. Escribí *Inicio* para volver a empezar."
+            actualizar_estado_usuario(numero_usuario, "INICIO")
             
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
-    # --- ESTADO ELIGIO_HORARIO: Confirmación final del turno (Igual que antes) ---
+    # --- ESTADO ELIGIO_HORARIO: Confirmación final del turno ---
     elif estado_actual == "ELIGIO_HORARIO":
         if mensaje_recibido.isdigit():
             id_horario_elegido = int(mensaje_recibido)
@@ -156,7 +181,7 @@ def webhook():
                 conn.close()
                 
                 reply = f"¡Turno confirmado con éxito! 🎉\n\n📌 *Detalles:*\n• Paciente: {nombre_temporal}\n• {nombre_actividad}\n• Día: {dia_semana}\n• Hora: {hora} hs.\n\nEscribí *Inicio* para volver al menú principal."
-                actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, nombre="")
+                actualizar_estado_usuario(numero_usuario, "INICIO", actividad_id=0, name="")
             else:
                 conn.close()
                 reply = "El número de opción que ingresaste no corresponde a los turnos disponibles."
@@ -166,7 +191,7 @@ def webhook():
         respuesta_twilio.message(reply)
         return str(respuesta_twilio)
 
-    # --- NUEVO ESTADO: PROCESAR LA CANCELACIÓN ---
+    # --- ESTADO: PROCESAR LA CANCELACIÓN ---
     elif estado_actual == "ESPERANDO_CANCELACION":
         if mensaje_recibido.isdigit():
             id_turno_cancelar = int(mensaje_recibido)
@@ -174,7 +199,7 @@ def webhook():
             conn = conectar_db()
             cursor = conn.cursor()
             
-            # Verificamos primero que ese ID de turno realmente le pertenezca a este número de teléfono (Seguridad)
+            # Verificamos primero que ese ID de turno realmente le pertenezca a este número de teléfono
             cursor.execute("SELECT id FROM turnos_reservados WHERE id = ? AND cliente_telefono = ?", (id_turno_cancelar, numero_usuario))
             existe_turno = cursor.fetchone()
             
@@ -196,6 +221,7 @@ def webhook():
         return str(respuesta_twilio)
 
     return str(respuesta_twilio)
+
 @app.route("/panel", methods=["GET"])
 @basic_auth.required
 def ver_panel():
@@ -217,15 +243,14 @@ def ver_panel():
     todos_los_turnos = cursor.fetchall()
     conn.close()
     
-    # Le pasamos los datos al archivo HTML para que los dibuje en la pantalla
     return render_template("panel.html", turnos=todos_los_turnos)
+
 def conectar_db():
     return sqlite3.connect("turnos_bot.db")
 
 def obtener_contexto_usuario(telefono):
     conn = conectar_db()
     cursor = conn.cursor()
-    # Creamos la tabla de estados si no existe por las dudas
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS estados_usuario (
             telefono TEXT PRIMARY KEY,
@@ -247,7 +272,6 @@ def actualizar_estado_usuario(telefono, nuevo_estado, actividad_id=None, nombre=
     conn = conectar_db()
     cursor = conn.cursor()
     
-    # PARCHE: Crear la tabla por si no existe antes de hacer el SELECT
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS estados_usuario (
             telefono TEXT PRIMARY KEY,
@@ -257,7 +281,6 @@ def actualizar_estado_usuario(telefono, nuevo_estado, actividad_id=None, nombre=
         )
     """)
     
-    # Ahora sí buscamos si ya existe el usuario
     cursor.execute("SELECT actividad_id, nombre_temporal FROM estados_usuario WHERE telefono = ?", (telefono,))
     existente = cursor.fetchone()
     
@@ -275,6 +298,7 @@ def actualizar_estado_usuario(telefono, nuevo_estado, actividad_id=None, nombre=
     
     conn.commit()
     conn.close()
+
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5000))
