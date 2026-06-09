@@ -202,13 +202,17 @@ def ver_panel():
     conn = conectar_db()
     cursor = conn.cursor()
     
-    # Hacemos una consulta cruzada (JOIN) para traer el nombre real de la actividad en lugar del ID numérico
+    # Obtenemos la fecha de hoy en formato AAAA-MM-DD
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    
+    # Filtramos para traer solo turnos de hoy o del futuro (fecha_reserva >= hoy)
     cursor.execute("""
         SELECT tr.id, tr.cliente_nombre, tr.cliente_telefono, a.nombre, tr.dia_semana, tr.hora, tr.fecha_reserva
         FROM turnos_reservados tr
         JOIN actividades a ON tr.actividad_id = a.id
-        ORDER BY tr.id DESC
-    """)
+        WHERE tr.fecha_reserva >= ?
+        ORDER BY tr.fecha_reserva ASC, tr.hora ASC
+    """, (hoy,))
     
     todos_los_turnos = cursor.fetchall()
     conn.close()
