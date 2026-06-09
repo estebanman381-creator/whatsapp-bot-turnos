@@ -127,19 +127,18 @@
                 <tbody>
                     {% for turno in turnos %}
                     <tr>
-                        <td>{{ turno[0] }}</td>
-                        <td><strong>{{ turno[1] }}</strong></td>
-                        <td class="telefono">{{ turno[2] }}</td>
-                        <td>
-                            {% if "Psic" in turno[3] %}
-                                <span class="badge badge-psico">{{ turno[3] }}</span>
-                            {% else %}
-                                <span class="badge badge-pedia">{{ turno[3] }}</span>
-                            {% endif %}
-                        </td>
-                        <td>{{ turno[4] }}</td>
-                        <td><strong>{{ turno[5] }} hs.</strong></td>
-                        <td style="color: #999; font-size: 13px;">{{ turno[6] }}</td>
+                        <td>{{ turno.id }}</td>
+            <td><strong>{{ turno.cliente_nombre }}</strong></td>
+            <td class="telefono">{{ turno.cliente_telefono }}</td>
+            <td>
+                {% if "Psic" in turno.actividad_nombre %}
+                    <span class="badge badge-psico">{{ turno.actividad_nombre }}</span>
+                {% else %}
+                    <span class="badge badge-pedia">{{ turno.actividad_nombre }}</span>
+                {% endif %}
+            </td>
+            <td>{{ turno.dia_semana }} {{ turno.fecha }}</td>
+            <td><strong>{{ turno.hora }} hs.</strong></td>
                     </tr>
                     {% else %}
                     <tr>
